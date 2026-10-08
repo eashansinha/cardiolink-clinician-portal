@@ -1,0 +1,25 @@
+{
+  "name": "cardiolink-clinician-portal",
+  "version": "0.1.0",
+  "description": "Clinician-facing portal for CardioLink device readings and reports",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "test": "echo \"no tests\" && exit 0"
+  },
+  "dependencies": {
+    "axios": "1.7.7",
+    "express": "4.21.0",
+    "jsonwebtoken": "9.0.2",
+    "pg": "8.13.0"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.21",
+    "@types/jsonwebtoken": "9.0.6",
+    "@types/node": "20.16.5",
+    "ts-node": "10.9.2",
+    "typescript": "5.6.2"
+  }
+}
