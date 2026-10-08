@@ -12,7 +12,7 @@ import {
   validateReportUrl,
 } from "./reportFetch";
 
-const ALLOWED = allowedReportHosts("reports.provider.example, Legacy.Provider.Example:8443");
+const ALLOWED = allowedReportHosts("reports.provider.example:443, Legacy.Provider.Example:8443");
 
 describe("isPublicAddress", () => {
   it("rejects loopback, private, link-local, metadata and reserved ranges", () => {
@@ -20,25 +20,31 @@ describe("isPublicAddress", () => {
       "127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254",
       "169.254.170.2", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255", "192.0.2.1",
       "::1", "::", "fe80::1", "fd00::1", "fc00::1", "ff02::1", "::ffff:169.254.169.254",
-      "::ffff:127.0.0.1", "64:ff9b::a9fe:a9fe", "2002:a9fe:a9fe::1", "not-an-ip",
+      "::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:a9fe:a9fe", "::ffff:a9fe:a9fe", "::7f00:1",
+      "::127.0.0.1", "64:ff9b::a9fe:a9fe", "64:ff9b:1::a9fe:a9fe", "2002:a9fe:a9fe::1", "2001::1", "not-an-ip",
     ]) {
       assert.equal(isPublicAddress(ip), false, ip);
     }
   });
 
   it("accepts globally routable unicast addresses", () => {
-    for (const ip of ["93.184.216.34", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) {
+    for (const ip of ["93.184.216.34", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8", "::ffff:808:808"]) {
       assert.equal(isPublicAddress(ip), true, ip);
     }
   });
 });
 
 describe("validateReportUrl", () => {
-  it("accepts https URLs on the allow-list, case-insensitively", () => {
+  it("accepts https URLs on the allow-list, case-insensitively and with or without :443", () => {
     assert.equal(
       validateReportUrl("https://reports.provider.example/exports/42.json#frag", ALLOWED).toString(),
       "https://reports.provider.example/exports/42.json",
     );
+    assert.equal(
+      validateReportUrl("https://Reports.Provider.Example:443/exports/42.json", ALLOWED).host,
+      "reports.provider.example",
+    );
+    assert.equal(validateReportUrl("https://reports.provider.example/r", allowedReportHosts("reports.provider.example")).host, "reports.provider.example");
     assert.equal(
       validateReportUrl("https://legacy.provider.example:8443/r", ALLOWED).host,
       "legacy.provider.example:8443",
@@ -119,7 +125,27 @@ describe("fetchReport", () => {
 
   it("never connects when an allow-listed name resolves to an internal address", async () => {
     const url = new URL(`https://reports.provider.example:${imdsPort}/latest/meta-data/iam/security-credentials/`);
-    await assert.rejects(fetchReport(url, fakeLookup([{ address: "127.0.0.1", family: 4 }])), /non-public address/);
+    for (const answer of [
+      { address: "127.0.0.1", family: 4 },
+      { address: "::ffff:127.0.0.1", family: 6 },
+      { address: "::ffff:7f00:1", family: 6 },
+      { address: "169.254.169.254", family: 4 },
+    ]) {
+      await assert.rejects(fetchReport(url, fakeLookup([answer])), /non-public address/, answer.address);
+    }
     assert.equal(hits, 0);
+  });
+
+  it("ignores HTTPS_PROXY so the connect-time check applies to the destination", async () => {
+    const prev = process.env.HTTPS_PROXY;
+    process.env.HTTPS_PROXY = `http://127.0.0.1:${imdsPort}`;
+    try {
+      const url = new URL("https://reports.provider.example/r");
+      await assert.rejects(fetchReport(url, fakeLookup([{ address: "10.0.0.5", family: 4 }])), /non-public address/);
+      assert.equal(hits, 0);
+    } finally {
+      if (prev === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = prev;
+    }
   });
 });

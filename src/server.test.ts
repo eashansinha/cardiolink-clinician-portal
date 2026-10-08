@@ -17,7 +17,7 @@ describe("POST /reports/import", () => {
   const token = issueToken({ sub: "dr-house", role: "clinician" });
 
   before(async () => {
-    process.env.REPORT_PROVIDER_HOSTS = "reports.provider.example";
+    process.env.REPORT_PROVIDER_HOSTS = "reports.provider.invalid";
     imds = http.createServer((_req, res) => {
       imdsHits++;
       res.end(JSON.stringify({ AccessKeyId: "AKIA-FAKE", [SECRET_MARKER]: "fake-secret", Token: "fake" }));
@@ -73,9 +73,9 @@ describe("POST /reports/import", () => {
   });
 
   it("does not leak upstream error details when an allow-listed fetch fails", async () => {
-    // Allow-listed host, but the name has no public DNS answer, so the fetch
-    // fails; the caller must only see a generic error.
-    const r = await importReport("https://reports.provider.example/exports/1.json");
+    // Allow-listed host under the reserved .invalid TLD (RFC 2606), so DNS
+    // deterministically fails; the caller must only see a generic error.
+    const r = await importReport("https://reports.provider.invalid/exports/1.json");
     assert.equal(r.status, 502);
     assert.equal(r.text, JSON.stringify({ error: "fetch failed" }));
   });

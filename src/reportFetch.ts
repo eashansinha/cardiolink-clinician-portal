@@ -10,12 +10,16 @@ const MAX_REPORT_BYTES = 5 * 1024 * 1024;
 const MAX_URL_LENGTH = 2048;
 const FETCH_TIMEOUT_MS = 5000;
 
-/** Hosts (host[:port]) that `/reports/import` may fetch from. Empty => deny all. */
+/**
+ * Hosts (host[:port]) that `/reports/import` may fetch from. Empty => deny all.
+ * An explicit `:443` is dropped so entries compare equal to `URL.host`, which
+ * omits the default https port.
+ */
 export function allowedReportHosts(raw: string = process.env.REPORT_PROVIDER_HOSTS || ""): Set<string> {
   return new Set(
     raw
       .split(",")
-      .map((h) => h.trim().toLowerCase())
+      .map((h) => h.trim().toLowerCase().replace(/:443$/, ""))
       .filter(Boolean),
   );
 }
@@ -46,6 +50,10 @@ function expandV6(ip: string): number[] | null {
   return parsed.some(Number.isNaN) ? null : parsed;
 }
 
+function embeddedV4(hi: number, lo: number): string {
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
 function isPublicV6(ip: string): boolean {
   const lower = ip.toLowerCase().replace(/%.*$/, "");
   const mapped = /^(?:0*:)*ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
@@ -53,12 +61,16 @@ function isPublicV6(ip: string): boolean {
   if (lower.includes(".")) return false; // other embedded-IPv4 forms: reject conservatively
   const g = expandV6(lower);
   if (!g) return false;
-  if (g.every((x) => x === 0)) return false; // ::
-  if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return false; // ::1
+  if (g.slice(0, 5).every((x) => x === 0)) {
+    // ::/96 (unspecified, loopback, deprecated IPv4-compatible) and
+    // ::ffff:0:0/96 (IPv4-mapped, hex form e.g. ::ffff:7f00:1)
+    if (g[5] === 0xffff) return isPublicV4(embeddedV4(g[6], g[7]));
+    return false;
+  }
   if ((g[0] & 0xfe00) === 0xfc00) return false; // fc00::/7 unique local
   if ((g[0] & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
   if ((g[0] & 0xff00) === 0xff00) return false; // ff00::/8 multicast
-  if (g[0] === 0x0064 && g[1] === 0xff9b) return false; // 64:ff9b::/96 NAT64
+  if (g[0] === 0x0064 && g[1] === 0xff9b) return false; // 64:ff9b::/96 and 64:ff9b:1::/48 NAT64
   if (g[0] === 0x2001 && g[1] === 0x0000) return false; // 2001::/32 Teredo
   if (g[0] === 0x2002) return false; // 2002::/16 6to4
   return true;
@@ -134,7 +146,9 @@ export interface FetchedReport {
 /**
  * Fetches an already-validated report URL. Redirects are not followed (a
  * redirect would otherwise escape the allow-list), the destination address is
- * re-checked at connect time, and the body is size-capped.
+ * re-checked at connect time, and the body is size-capped. Environment proxies
+ * are ignored so the connect-time address check always applies to the
+ * destination host rather than to a proxy.
  */
 export async function fetchReport(url: URL, lookup: LookupFn = dns.lookup): Promise<FetchedReport> {
   const agent = new https.Agent({ lookup: guardedLookup(lookup) as any });
@@ -144,6 +158,7 @@ export async function fetchReport(url: URL, lookup: LookupFn = dns.lookup): Prom
     maxContentLength: MAX_REPORT_BYTES,
     maxBodyLength: MAX_REPORT_BYTES,
     httpsAgent: agent,
+    proxy: false,
   });
   return { status: resp.status, body: resp.data };
 }
