@@ -1,8 +1,8 @@
-import axios from "axios";
 import express, { NextFunction, Request, Response } from "express";
 
 import { Claims, verifyToken } from "./auth";
 import { readingsForPatient } from "./db";
+import { ReportUrlError, allowedReportHosts, fetchReport, validateReportUrl } from "./reportFetch";
 
 const app = express();
 app.use(express.json());
@@ -30,20 +30,31 @@ app.get("/patients/:id/readings", authenticate, (req: AuthedRequest, res: Respon
   res.json({ patient: req.params.id, readings: readingsForPatient(req.params.id) });
 });
 
-// SSRF: fetches an arbitrary clinician-supplied URL to "import" an external
-// device report, with no allowlist or scheme/host restriction.
+// Imports an external device report. Only https URLs on the REPORT_PROVIDER_HOSTS
+// allow-list are fetched; private/link-local/metadata addresses are refused at
+// connect time, redirects are not followed, and upstream errors are not echoed.
 app.post("/reports/import", authenticate, async (req: AuthedRequest, res: Response) => {
-  const url = req.body?.reportUrl;
-  if (!url) return res.status(400).json({ error: "reportUrl required" });
+  const raw = req.body?.reportUrl;
+  if (!raw) return res.status(400).json({ error: "reportUrl required" });
+  let url: URL;
   try {
-    const resp = await axios.get(url, { timeout: 5000, maxRedirects: 5 } as any);
-    res.json({ fetched: url, status: resp.status, body: resp.data });
+    url = validateReportUrl(raw, allowedReportHosts());
+  } catch (e) {
+    const reason = e instanceof ReportUrlError ? e.message : "reportUrl not allowed";
+    return res.status(400).json({ error: reason });
+  }
+  try {
+    const report = await fetchReport(url);
+    res.json({ fetched: url.toString(), status: report.status, body: report.body });
   } catch (e: any) {
-    res.status(502).json({ error: "fetch failed", detail: e?.message });
+    console.error(`report import from ${url.host} failed: ${e?.message}`);
+    res.status(502).json({ error: "fetch failed" });
   }
 });
 
-const port = Number(process.env.PORT || 3000);
-app.listen(port, () => console.log(`clinician portal on :${port}`));
+if (require.main === module) {
+  const port = Number(process.env.PORT || 3000);
+  app.listen(port, () => console.log(`clinician portal on :${port}`));
+}
 
 export default app;
